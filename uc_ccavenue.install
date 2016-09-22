@@ -1,0 +1,23 @@
+<?php
+
+/**
+ * @file
+ * Installation file for CCAvenue, primarily for the logging transaction details.
+
+/**
+ * Implementation of hook_install().
+ */
+function uc_ccavenue_install() {
+  $t = get_t();
+  db_query("INSERT INTO {uc_order_statuses} (order_status_id, title, state, weight, locked) VALUES ('ccavenue_pending', '". $t('CCAvenue pending') ."', 'payment_received', 7, 1);");
+}
+
+/**
+ * Implementation of hook_uninstall().
+ */
+function uc_ccavenue_uninstall() {
+  db_query("DELETE FROM {variable} WHERE name LIKE 'uc_ccavenue_%%'");
+}
+
+
+

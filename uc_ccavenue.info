@@ -1,0 +1,13 @@
+name = CCAvenue
+description = Integrates various CCAveunue payment services and IPN feedback.
+dependencies[] = uc_payment
+package = Ubercart - payment
+core = 6.x
+php = 5.0
+
+; Information added by drupal.org packaging script on 2013-10-19
+version = "6.x-1.0-alpha1+2-dev"
+core = "6.x"
+project = "uc_ccavenue"
+datestamp = "1382148917"
+

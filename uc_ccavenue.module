@@ -1,0 +1,207 @@
+<?php
+
+/**
+ * @file
+ * Integrates CCAvenue payment services and Transaction Details
+ * with Ubercart!
+ */
+
+/**
+ * Implementation of hook_menu().
+ */
+function uc_ccavenue_menu() {
+  // Always accessible, helps for testing while site is offline.
+  $items['uc_ccavenue/response_handler'] = array(
+    'title' => 'CCAvenue Redirect',
+    'page callback' => 'uc_ccavenue_response_handler',
+    'access callback' => 'uc_ccavenue_redirect_access',
+    'type' => MENU_CALLBACK,
+    'file' => 'uc_ccavenue.pages.inc',
+  );
+
+  return $items;
+}
+
+/**
+ * Make sure CCAvenue always has access to send Redirects.
+ */
+function uc_ccavenue_redirect_access() {
+  return TRUE;
+}
+
+/**
+ * Implementation of hook_perm().
+ */
+function uc_ccavenue_perm() {
+  return array('administer ccavenue');
+}
+
+/**
+ * Implementation of hook_form_alter().
+ * Notice how we alter the checkout review form to post the order to CCAvenue.
+ */
+function uc_ccavenue_form_alter(&$form, &$form_state, $form_id) {
+  if ($form_id == 'uc_cart_checkout_review_form' && ($order_id = intval($_SESSION['cart_order'])) > 0) {
+    $order = uc_order_load($order_id);
+
+    if ($order->payment_method == 'ccavenue') {
+      unset($form['submit']);
+      $form['#prefix'] = '<table style="display: inline; padding-top: 1em;"><tr><td>';
+      $form['#suffix'] = '</td><td>'. drupal_get_form('uc_ccavenue_form', $order) .'</td></tr></table>';
+    }
+  }
+}
+
+/**
+ * Implementation of hook_payment_method().
+ */
+function uc_ccavenue_payment_method() {
+  global $base_root;
+  
+  $path = base_path(). drupal_get_path('module', 'uc_credit');
+  $module_path = $base_root. base_path() . drupal_get_path('module', 'uc_ccavenue');
+
+  $title1 = '<img src="'.$module_path.'/ccavenue_logo.gif" style="position: relative; top: 5px; margin-right: 4px;">'. t('CCAvenue');
+
+  $methods[] = array(
+    'id' => 'ccavenue',
+    'name' => t('CCAvenue Payment Gateway'),
+    'title' => $title1,
+    'review' => t('CCAvenue'),
+    'desc' => t('Redirect users to submit payments through PayPal.'),
+    'callback' => 'uc_payment_method_ccavenue',
+    'weight' => 1,
+    'checkout' => FALSE,
+    'no_gateway' => TRUE,
+  );
+  
+  return $methods;
+}
+
+/**
+ * Handles the CCAvenue Payment
+ */
+function uc_payment_method_ccavenue($op, &$arg1) {
+  switch ($op) {
+    case 'settings':
+      $form['uc_ccavenue_merchant_id'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Merchant ID'),
+        '#description' => t('This id (also User Id) available at "Generate Working Key" of "Settings & Options" section of your CCAvenue Account.'),
+        '#default_value' => variable_get('uc_ccavenue_merchant_id', ''),
+      );
+
+      $form['uc_ccavenue_access_code'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Access Code'),
+        '#description' => t('This Access Code available at "Generate Working Key" of "Settings & Options" section of your CCAvenue Account.'),
+        '#default_value' => variable_get('uc_ccavenue_access_code', ''),
+      );
+      
+      $form['uc_ccavenue_working_key'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Working Key'),
+        '#description' => t('The 32 bit alphanumeric key in the textbox provided here. Please note that get this key, login to your CCAvenue merchant account and visit the "Generate Working Key" section at the "Settings & Options" page. '),
+        '#default_value' => variable_get('uc_ccavenue_working_key', ''),
+      );
+      
+      $form['uc_ccavenue_server'] = array(
+        '#type' => 'select',
+        '#title' => t('CCAvenue server'),
+        '#description' => t('The Available list of CCAvenue Servers'),
+        '#options' => array(
+          'https://secure.ccavenue.com/transaction/transaction.do?command=initiateTransaction' => ('Live'),
+          'https://test.ccavenue.com/transaction/transaction.do?command=initiateTransaction' => ('test'),
+        ),
+        '#default_value' => variable_get('uc_ccavenue_server', 'https://secure.ccavenue.com/transaction/transaction.do?command=initiateTransaction'),
+      );
+      
+      $form['uc_ccavenue_checkout_button'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Order review submit button text'),
+        '#description' => t('Provide CCAvenue specific text for the submit button on the order review page.'),
+        '#default_value' => variable_get('uc_ccavenue_checkout_button', t('Submit Order')),
+      );
+
+      $form['uc_ccavenue_test_configuration'] = array(
+        '#type' => 'checkbox',
+        '#title' => t('Run CCAvenue in Test Configuration'),
+        '#description' => t('When enabled will automatically Send SUB-MERCHANT TEST to CCAvenue Gateway and will set the total value of products to 1'),
+        '#default_value' => variable_get('uc_ccavenue_test_configuration', FALSE),
+      );
+      
+      return $form;
+  }
+}
+
+/**
+ * Returns the form elements for the Website Payments Standard form.
+ */
+function uc_ccavenue_form($form_state, $order) {
+  include("libs/Crypto.php");
+  global $base_url;
+  $amount = $order->order_total;
+  $order_id = $order->order_id;
+  $marchant_id = variable_get('uc_ccavenue_merchant_id', '');
+  $working_key = variable_get('uc_ccavenue_working_key', ''); 
+  $access_code = variable_get('uc_ccavenue_access_code', '');
+  $ccavenue_url = variable_get('uc_ccavenue_server', 'https://secure.ccavenue.com/transaction/transaction.do?command=initiateTransaction');
+  $redirect_url = $base_url . '/uc_ccavenue/response_handler';
+  $merchant_data = 'tid=' . urlencode(time()) . '&';
+  $merchant_data .= 'merchant_id=' . urlencode($marchant_id) . '&';
+  $merchant_data .= 'order_id=' . urlencode($order_id) . '&';
+  if (variable_get('uc_ccavenue_test_configuration', FALSE) == TRUE) {
+    $merchant_data .= 'amount=' . urlencode(1) . '&';
+  }
+  else {
+    $merchant_data .= 'amount=' . urlencode($amount) . '&';
+  }
+//  $merchant_data .= 'currency=' . urlencode($order->currency) . '&';
+//  http://aravin.net/list-ccavenue-response-parameters-error-codes/ for find error
+  $merchant_data .= 'currency=' . urlencode('INR') . '&';
+  $merchant_data .= 'redirect_url=' . urlencode($redirect_url) . '&';
+  $merchant_data .= 'cancel_url=' . urlencode($redirect_url) . '&';
+  $merchant_data .= 'language=' . urlencode('EN') . '&';
+  $merchant_data .= 'billing_name=' . urlencode($order->billing_first_name .' '. $order->billing_last_name) . '&';
+  $merchant_data .= 'billing_address=' . urlencode($order->billing_street1 .' '. $order->billing_street2) . '&';
+  $merchant_data .= 'billing_city=' . urlencode($order->billing_city) . '&';
+  $merchant_data .= 'billing_state=' . urlencode(uc_zone_get_by_id($order->billing_zone)) . '&';
+  $merchant_data .= 'billing_zip=' . urlencode($order->billing_postal_code) . '&';
+  $merchant_data .= 'billing_country=' . urlencode(uc_country_get_by_id($order->billing_country)) . '&';
+  if (trim($order->billing_phone)) {
+    $merchant_data .= 'billing_tel=' . urlencode($order->billing_phone) . '&';
+  }
+  $merchant_data .= 'billing_email=' . urlencode($order->primary_email) . '&';
+  if (trim($order->delivery_first_name)) {
+    $merchant_data .= 'delivery_name=' . urlencode($order->delivery_first_name .' '. $order->delivery_last_name) . '&';
+  }
+  if (trim($order->delivery_street1)) {
+    $merchant_data .= 'delivery_address=' . urlencode($order->delivery_street1 .' '. $order->delivery_street2) . '&';
+  }
+  if (trim($order->delivery_city)) {
+    $merchant_data .= 'delivery_city=' . urlencode($order->delivery_city) . '&';
+  }
+  if (trim($order->delivery_zone) && $order->delivery_zone > 0) {
+    $merchant_data .= 'delivery_state=' .urlencode(uc_zone_get_by_id($order->delivery_zone)) . '&';
+  }
+  if (trim($order->delivery_postal_code)) {
+    $merchant_data .= 'delivery_zip=' . urlencode($order->delivery_postal_code) . '&';
+  }
+  if (trim($order->delivery_phone)) {
+    $merchant_data .= 'delivery_tel=' . urlencode($order->delivery_phone) . '&';
+  }
+  if (trim($order->delivery_country) && $order->delivery_country > 0) {
+    $merchant_data .= 'delivery_country=' .urlencode(uc_country_get_by_id($order->delivery_country));
+  }
+  $encrypted_data = encrypt($merchant_data,$working_key);
+  $form['#action'] = $ccavenue_url;
+  $form['#method'] = 'post';
+  $form['encRequest'] = array('#type' => 'hidden', '#value' => $encrypted_data);
+  $form['access_code'] = array('#type' => 'hidden', '#value' => $access_code);
+  $form['submit'] = array(
+    '#type' => 'submit',
+    '#value' => variable_get('uc_ccavenue_checkout_button', t('Submit Order')),
+  );
+
+  return $form;
+}
